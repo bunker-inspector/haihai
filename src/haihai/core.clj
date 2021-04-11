@@ -40,7 +40,7 @@
   [url {:keys [elem-fn! depth depth-limit domain seen tags]
         :as opts
         :or {depth 0}}]
-  (log/infof "Starting on URL: %s" url)
+  (log/infof "Start processing %s" url)
   (let [domain (or domain
                    (-> url
                        uri/uri
@@ -50,8 +50,8 @@
         conn (backoff #(soup/connection url))
         elems
         (apply
-         concat
-         (map
+         interleave
+         (pmap
           (fn [tag]
             (->> tag
                  name
@@ -70,14 +70,15 @@
                               (in-domain? domain %)))))
           tags))]
     (doall (pmap elem-fn! elems))
-    (when (or (and depth-limit (< depth depth-limit))
+    (if (or (and depth-limit (< depth depth-limit))
               (not depth-limit))
       (->> elems
            (filter #(-> % soup/tag-name (= "a")))
            (map #(soup/attr % "href"))
            (map #(crawl % (assoc opts
                                   :depth (inc depth)
-                                  :seen seen)))))))
+                                  :seen seen))))
+      (log/info "Depth limit reached. Ending search."))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Irasutoya Example
@@ -117,7 +118,7 @@
                   img-src)
         image-name (-> img-src uri/uri :path (str/split #"/") last)
         image-path (str "output/" image-name)]
-    (when-not (java.io.File. image-path)
+    (when-not (.exists (java.io.File. image-path))
       (copy-uri-to-file! img-src image-path))))
 
 (defn -main []
