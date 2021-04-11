@@ -6,12 +6,12 @@
    [lambdaisland.uri :as uri]
    [clojure.string :as str]))
 
-(defn- in-domain? [domain a]
-  (-> a
-      (soup/attr "href")
-      uri/uri
-      :host
-      (= domain)))
+(defn- allowed-domain? [domains a]
+  (let [testing (-> a (soup/attr "href") uri/uri :host)
+        res (contains? domains testing)]
+    (when-not res
+      (log/infof "Filtered out domain %s" testing))
+    res))
 
 (defn- backoff
   ([f]
@@ -23,12 +23,12 @@
      (if-let [res (try (f)
                        (catch Exception e
                          (log/warnf "Failed %d times, error: %s" attempts e)
-                         (when (>= attempts max-attempts)
-                           (throw e))
                          nil))]
        res
-       (do (Thread/sleep (* attempts wait-interval))
-           (recur (inc attempts)))))))
+       (if (>= attempts max-attempts)
+         (log/warn "Reached max attempts. Quitting.")
+         (do (Thread/sleep (* attempts wait-interval))
+             (recur (inc attempts))))))))
 
 (defmulti pre-process soup/tag-name)
 (defmethod pre-process :default [x] x)
@@ -37,92 +37,130 @@
 (defmethod elem-fn! :default [x] x)
 
 (defn crawl
-  [url {:keys [elem-fn! depth depth-limit domain seen tags]
+  [url {:keys [elem-fn! depth depth-limit domains ignore-domain seen tags]
         :as opts
         :or {depth 0}}]
-  (log/infof "Start processing %s" url)
-  (let [domain (or domain
-                   (-> url
-                       uri/uri
-                       :host))
-        tags (conj tags :a) ;; Can't image it could work without this
-        seen (or seen (atom #{}))
-        conn (backoff #(soup/connection url))
-        elems
-        (apply
-         interleave
-         (pmap
-          (fn [tag]
-            (->> tag
-                 name
-                 ;; Get all elements of tag type
-                 (soup/extract conn)
-                 ;;
-                 (map pre-process)
-                 ;; Remove elements that we've already seen
-                 (remove #(@seen (soup/elem->id %)))
-                 ;; Mark seen
-                 (map (fn [elem]
-                        (swap! seen conj (soup/elem->id elem))
-                        elem))
-                 ;; Remove links that don't stay in the domain
-                 (filter #(or (not= "a" (soup/tag-name %))
-                              (in-domain? domain %)))))
-          tags))]
-    (doall (pmap elem-fn! elems))
-    (if (or (and depth-limit (< depth depth-limit))
-              (not depth-limit))
-      (->> elems
-           (filter #(-> % soup/tag-name (= "a")))
-           (map #(soup/attr % "href"))
-           (map #(crawl % (assoc opts
-                                  :depth (inc depth)
-                                  :seen seen))))
-      (log/info "Depth limit reached. Ending search."))))
+  (when depth-limit
+    (log/infof "Depth: %d, Limit: %d" depth depth-limit))
+  (let [domains (or domains
+                    (-> url
+                        uri/uri
+                        :host
+                        set))
+        tags (conj (set tags) :a) ;; Can't image it could work without this
+        seen (or seen (atom #{}))]
+    (if-let [conn (backoff #(soup/connection url))]
+      (let [elems
+            (apply
+             interleave
+             (pmap
+              (fn [tag]
+                (->> tag
+                     name
+                     ;; Get all elements of tag type
+                     (soup/extract conn)
+                     ;; Apply pre-processing
+                     (map pre-process)
+                     (filter some?)
+                     ;; Get a little weird
+                     shuffle
+                     ;; Remove elements that we've already seen
+                     (remove #(@seen (soup/elem->id %)))
+                     ;; Mark seen
+                     (map (fn [elem]
+                            (swap! seen conj (soup/elem->id elem))
+                            elem))
+                     ;; Optionally remove links that don't stay in the allowed domains
+                     (filter #(or (not= "a" (soup/tag-name %))
+                                  (or ignore-domain
+                                      (allowed-domain? domains %))))))
+              tags))]
+        (doall (pmap elem-fn! elems))
+        (if (or (and depth-limit (< depth depth-limit))
+                (not depth-limit))
+          (->> elems
+               (filter #(-> % soup/tag-name (= "a")))
+               (map #(soup/attr % "href"))
+               (map #(crawl % (assoc opts
+                                     :depth (inc depth)
+                                     :seen seen))))
+          (log/info "Depth limit reached. Ending search.")))
+      (log/warnf "Unable to connect to URL %s. Skipping" url))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Irasutoya Example
 
+
 (def +irasutoya-url+ "https://www.irasutoya.com")
 (def +irasutoya-uri-comps+ (uri/uri +irasutoya-url+))
-
-;; Expand relative paths
-(defmethod pre-process "a"
-  [a]
-  (let [href-curr (soup/attr a "href")]
-    (cond (str/starts-with? href-curr "//")
-          (soup/attr a "href" (format "%s:%s"
-                                      (:scheme +irasutoya-uri-comps+)
-                                      href-curr))
-          (str/starts-with? href-curr "/")
-          (soup/attr a "href" (format "%s://%s%s"
-                                      (:scheme +irasutoya-uri-comps+)
-                                      (:host +irasutoya-uri-comps+)
-                                      href-curr)))
-    #_(log/infof "Href: %s -> %s" href-curr (soup/attr a "href"))
-    a))
 
 (defn copy-uri-to-file! [uri file]
   (try
     (with-open [in (io/input-stream uri)
                 out (io/output-stream file)]
-      (log/infof "Writing to URI -> %s" uri file)
+      (log/infof "Writing from URI to %s" file)
       (io/copy in out))
     (catch Exception e
       (log/warnf "Could not write file at URI %s" uri))))
 
-(defmethod elem-fn! "img" [img]
-  (let [img-src (soup/attr img "src")
-        img-src (if (str/starts-with? img-src "//")
-                  (str (:scheme +irasutoya-uri-comps+) img-src)
-                  img-src)
-        image-name (-> img-src uri/uri :path (str/split #"/") last)
+(defn process-image [uri]
+  (let [uri (if (str/starts-with? uri "//")
+              (str (:scheme +irasutoya-uri-comps+) uri)
+              uri)
+        image-name (-> uri uri/uri :path (str/split #"/") last)
         image-path (str "output/" image-name)]
     (when-not (.exists (java.io.File. image-path))
-      (copy-uri-to-file! img-src image-path))))
+      (copy-uri-to-file! uri image-path))))
+
+(defn- process-href-image [href]
+  (process-image href))
+
+(defn- process-img-image [img]
+  (process-image (soup/attr img "src")))
+
+(defn- is-image? [uri]
+  (let [uri (str/lower-case uri)]
+    (or
+     (str/ends-with? uri ".png")
+     (str/ends-with? uri ".jpeg")
+     (str/ends-with? uri ".jpg"))))
+
+;; Expand relative paths
+(defmethod pre-process "a"
+  [a]
+  (let [href-curr (soup/attr a "href")]
+    (cond
+      (str/starts-with? href-curr "//")
+      (soup/attr a "href" (format "%s:%s"
+                                  (:scheme +irasutoya-uri-comps+)
+                                  href-curr))
+
+      (str/starts-with? href-curr "/")
+      (soup/attr a "href" (format "%s://%s%s"
+                                  (:scheme +irasutoya-uri-comps+)
+                                  (:host +irasutoya-uri-comps+)
+                                  href-curr))
+
+      (str/starts-with? href-curr "#")
+      nil)
+    (if (is-image? href-curr)
+      (do (process-href-image href-curr) nil)
+      a)))
+
+(defmethod elem-fn! "img" [img]
+  (process-img-image img))
 
 (defn -main []
   (.mkdir (java.io.File. "output"))
   (crawl +irasutoya-url+
          {:tags [:img]
+          :domains #{"www.irasutoya.com"
+                     "www.blogger.com"
+                     "1.bp.blogspot.com"
+                     "2.bp.blogspot.com"
+                     "3.bp.blogspot.com"
+                     "4.bp.blogspot.com"
+                     "draft.blogger.com"
+                     "irasutoya-sear.ch"}
+          :depth-limit 4
           :elem-fn! elem-fn!}))
