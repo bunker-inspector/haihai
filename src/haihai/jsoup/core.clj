@@ -3,13 +3,19 @@
            org.jsoup.nodes.Element))
 
 (defn connection [url]
-  (.get (Jsoup/connect url)))
+  (-> url
+      (Jsoup/connect)
+      (.followRedirects true)
+      (.get)))
 
 (defn extract [connection selector]
   (.select connection selector))
 
-(defn attr [elem a]
-  (.attr elem a))
+(defn attr
+  ([elem to-get-attr]
+   (.attr elem to-get-attr))
+  ([elem to-set-attr new-attr-val]
+   (.attr elem to-set-attr new-attr-val)))
 
 (defn tag-name [elem]
   (.tagName elem))
