@@ -40,6 +40,7 @@
   [url {:keys [elem-fn! depth depth-limit domain seen tags]
         :as opts
         :or {depth 0}}]
+  (log/infof "Starting on URL: %s" url)
   (let [domain (or domain
                    (-> url
                        uri/uri
@@ -74,7 +75,7 @@
       (->> elems
            (filter #(-> % soup/tag-name (= "a")))
            (map #(soup/attr % "href"))
-           (pmap #(crawl % (assoc opts
+           (map #(crawl % (assoc opts
                                   :depth (inc depth)
                                   :seen seen)))))))
 
