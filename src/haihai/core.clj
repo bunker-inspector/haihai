@@ -101,14 +101,41 @@
       (log/infof "Writing from URI to %s" file)
       (io/copy in out))
     (catch Exception e
-      (log/warnf "Could not write file at URI %s" uri))))
+      (log/warnf "Could not write file at URI %s, Error: %s" uri e))))
+
+(defn- is-some-bullshit? [image-name]
+  (or (str/starts-with? image-name "twitter")
+      (str/starts-with? image-name "line_")
+      (str/includes? image-name "searchbtn")
+      (str/includes? image-name "sidebar")
+      (str/includes? image-name "button")
+      (str/includes? image-name "navigation")))
+
+(defn- is-character? [image-name]
+  (or (str/starts-with? image-name "alphabet_character")
+      (str/starts-with? image-name "capital_")
+      (str/starts-with? image-name "hiragana_")
+      (str/starts-with? image-name "katakana_")
+      (str/starts-with? image-name "paint_capital_")
+      (str/starts-with? image-name "paint_hiragana_")
+      (str/starts-with? image-name "paint_katakana_")
+      (str/starts-with? image-name "paint_number_")
+      (str/starts-with? image-name "paint_hoka")))
 
 (defn process-image [uri]
   (let [uri (if (str/starts-with? uri "//")
-              (str (:scheme +irasutoya-uri-comps+) uri)
+              (str (:scheme +irasutoya-uri-comps+) ":" uri)
               uri)
         image-name (-> uri uri/uri :path (str/split #"/") last)
-        image-path (str "output/" image-name)]
+        image-folder (cond
+                       (str/includes? image-name "banner") "banners"
+                       (str/includes? image-name "icon") "icons"
+                       (str/includes? image-name "logo") "logos"
+                       (str/includes? image-name "thumbnail") "thumbnails"
+                       (is-character? image-name) "characters"
+                       (is-some-bullshit? image-name) "bs"
+                       :else "main")
+        image-path (str "output/" image-folder "/" image-name)]
     (when-not (.exists (java.io.File. image-path))
       (copy-uri-to-file! uri image-path))))
 
@@ -152,15 +179,23 @@
 
 (defn -main []
   (.mkdir (java.io.File. "output"))
+  (.mkdir (java.io.File. "output/banners"))
+  (.mkdir (java.io.File. "output/icons"))
+  (.mkdir (java.io.File. "output/logos"))
+  (.mkdir (java.io.File. "output/characters"))
+  (.mkdir (java.io.File. "output/thumbnails"))
+  (.mkdir (java.io.File. "output/bs"))
+  (.mkdir (java.io.File. "output/main"))
   (crawl +irasutoya-url+
          {:tags [:img]
           :domains #{"www.irasutoya.com"
                      "www.blogger.com"
+                     "b.hatena.jp"
                      "1.bp.blogspot.com"
                      "2.bp.blogspot.com"
                      "3.bp.blogspot.com"
                      "4.bp.blogspot.com"
                      "draft.blogger.com"
                      "irasutoya-sear.ch"}
-          :depth-limit 4
+          :depth-limit 6
           :elem-fn! elem-fn!}))
