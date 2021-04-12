@@ -40,8 +40,7 @@
   [url {:keys [elem-fn! depth depth-limit domains ignore-domain seen tags]
         :as opts
         :or {depth 0}}]
-  (when depth-limit
-    (log/infof "Depth: %d, Limit: %d" depth depth-limit))
+  #_(log/infof "Start processing %s." url)
   (let [domains (or domains
                     (-> url
                         uri/uri
@@ -58,7 +57,7 @@
                 (->> tag
                      name
                      ;; Get all elements of tag type
-                     (soup/extract conn)
+                     (soup/select conn)
                      ;; Apply pre-processing
                      (map pre-process)
                      (filter some?)
@@ -112,13 +111,18 @@
       (str/includes? image-name "navigation")))
 
 (defn- is-character? [image-name]
-  (or (str/starts-with? image-name "alphabet_character")
+  (or (str/starts-with? image-name "alphabet_")
       (str/starts-with? image-name "capital_")
+      (str/starts-with? image-name "lower_")
       (str/starts-with? image-name "hiragana_")
       (str/starts-with? image-name "katakana_")
+      (str/starts-with? image-name "number_")
+      (str/starts-with? image-name "roman_number")
+      (str/starts-with? image-name "number_kanji")
+      (str/starts-with? image-name "paint_lower_")
       (str/starts-with? image-name "paint_capital_")
-      (str/starts-with? image-name "paint_hiragana_")
-      (str/starts-with? image-name "paint_katakana_")
+      (str/starts-with? image-name "paint_hiragana")
+      (str/starts-with? image-name "paint_katakana")
       (str/starts-with? image-name "paint_number_")
       (str/starts-with? image-name "paint_hoka")))
 
@@ -188,7 +192,9 @@
   (.mkdir (java.io.File. "output/main"))
   (crawl +irasutoya-url+
          {:tags [:img]
+          :depth-limit 10
           :domains #{"www.irasutoya.com"
+                     "irasutoya.com"
                      "www.blogger.com"
                      "b.hatena.jp"
                      "1.bp.blogspot.com"
@@ -197,5 +203,4 @@
                      "4.bp.blogspot.com"
                      "draft.blogger.com"
                      "irasutoya-sear.ch"}
-          :depth-limit 6
           :elem-fn! elem-fn!}))
