@@ -8,7 +8,10 @@
       (.followRedirects true)
       (.get)))
 
-(defn extract [connection selector]
+(defn get-elements-by-tag [root tag-name]
+  (.getElementsByTag root tag-name))
+
+(defn select [connection selector]
   (.select connection selector))
 
 (defn attr

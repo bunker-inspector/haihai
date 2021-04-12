@@ -10,7 +10,7 @@
   (let [testing (-> a (soup/attr "href") uri/uri :host)
         res (contains? domains testing)]
     (when-not res
-      (log/infof "Filtered out domain %s" testing))
+      (log/debugf "Filtered out domain %s" testing))
     res))
 
 (defn- backoff
@@ -36,11 +36,17 @@
 (defmulti elem-fn! soup/tag-name)
 (defmethod elem-fn! :default [x] x)
 
+(defn- loops-back? [domains]
+  (fn [url]
+    (let [{host :host path :path} (uri/uri url)]
+      (and (= path "/")
+           (domains host)))))
+
 (defn crawl
   [url {:keys [elem-fn! depth depth-limit domains ignore-domain seen tags]
         :as opts
         :or {depth 0}}]
-  #_(log/infof "Start processing %s." url)
+  (log/debugf "Start processing %s." url)
   (let [domains (or domains
                     (-> url
                         uri/uri
@@ -57,12 +63,12 @@
                 (->> tag
                      name
                      ;; Get all elements of tag type
-                     (soup/select conn)
+                     (soup/get-elements-by-tag conn)
                      ;; Apply pre-processing
                      (map pre-process)
                      (filter some?)
                      ;; Get a little weird
-                     shuffle
+                     #_shuffle
                      ;; Remove elements that we've already seen
                      (remove #(@seen (soup/elem->id %)))
                      ;; Mark seen
@@ -79,11 +85,13 @@
                 (not depth-limit))
           (->> elems
                (filter #(-> % soup/tag-name (= "a")))
+               ;; Attempt to catch home-page links
+               (remove (loops-back? domains))
                (map #(soup/attr % "href"))
                (map #(crawl % (assoc opts
                                      :depth (inc depth)
                                      :seen seen))))
-          (log/info "Depth limit reached. Ending search.")))
+          (log/debug "Depth limit reached. Ending search.")))
       (log/warnf "Unable to connect to URL %s. Skipping" url))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -97,7 +105,7 @@
   (try
     (with-open [in (io/input-stream uri)
                 out (io/output-stream file)]
-      (log/infof "Writing from URI to %s" file)
+      (log/infof "[WRITE] -> %s" file)
       (io/copy in out))
     (catch Exception e
       (log/warnf "Could not write file at URI %s, Error: %s" uri e))))
@@ -117,6 +125,8 @@
       (str/starts-with? image-name "hiragana_")
       (str/starts-with? image-name "katakana_")
       (str/starts-with? image-name "number_")
+      (str/starts-with? image-name "hoka_")
+      (str/starts-with? image-name "hoka2_")
       (str/starts-with? image-name "roman_number")
       (str/starts-with? image-name "number_kanji")
       (str/starts-with? image-name "paint_lower_")
@@ -181,7 +191,7 @@
 (defmethod elem-fn! "img" [img]
   (process-img-image img))
 
-(defn -main []
+(defn -main [& _]
   (.mkdir (java.io.File. "output"))
   (.mkdir (java.io.File. "output/banners"))
   (.mkdir (java.io.File. "output/icons"))
@@ -191,8 +201,7 @@
   (.mkdir (java.io.File. "output/bs"))
   (.mkdir (java.io.File. "output/main"))
   (crawl +irasutoya-url+
-         {:tags [:img]
-          :depth-limit 10
+         {:tags #{"img"}
           :domains #{"www.irasutoya.com"
                      "irasutoya.com"
                      "www.blogger.com"
